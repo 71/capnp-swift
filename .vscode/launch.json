@@ -1,0 +1,34 @@
+{
+  "configurations": [
+    {
+      "name": "Debug schema.capnp generation",
+      "type": "swift",
+      "request": "launch",
+      "args": [
+        "capnp",
+        "compile",
+        "Sources/CapnProtoSchema/schema.capnp"
+      ],
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/.build/debug/capnpc-swift",
+      "preLaunchTask": "swift: Build Debug capnpc-swift",
+      "env": {
+        "CAPNPC_SWIFT_MODULES": "0xa93fc509624c72d9=CapnProtoSchema"
+      }
+    },
+    {
+      "name": "Debug test schema generation",
+      "type": "swift",
+      "request": "launch",
+      "args": [
+        "capnp",
+        "compile",
+        "Tests/CapnProtoTests/schema.capnp",
+        "--import-path=${workspaceFolder}"
+      ],
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/.build/debug/capnpc-swift",
+      "preLaunchTask": "swift: Build Debug capnpc-swift"
+    }
+  ]
+}

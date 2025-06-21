@@ -1,0 +1,18 @@
+{
+  "editor.formatOnSave": true,
+  "deno.enable": true,
+  "swift.autoGenerateLaunchConfigurations": false,
+
+  "cSpell.words": [
+    "addressbook",
+    "capnp",
+    "capnpc",
+    "capnproto",
+    "enumerant",
+    "enumerants",
+    "getenv",
+    "prebuild",
+    "subpaths",
+    "writeability"
+  ]
+}
