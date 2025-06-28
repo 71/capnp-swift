@@ -48,6 +48,83 @@ not 100% there:
 
 1. There are few tests, and the code has not undergone any thorough review.
 
+## Usage
+
+### Using plugins
+
+If `capnp` is in your `PATH`, Cap'n Proto Swift can be used as a plugin which
+will automatically convert `.capnp` files in your source directory.
+
+```swift
+// Package.swift
+
+let package = Package(
+  dependencies: [
+    .package(url: "https://github.com/71/capnp-swift", branch: "main"),
+  ],
+  targets: [
+    .target(
+      name: "MyTarget",
+      dependencies: [
+        .product(name: "CapnProto", package: "capnp-swift"),
+      ],
+      plugins: [
+        .plugin(name: "CapnProtoPlugin", package: "capnp-swift"),
+      ]
+    ),
+  ]
+)
+```
+
+### Manually
+
+If you do not want the build to happen automatically, you can instead use
+`capnpc-swift` as a [Cap'n Proto plugin](https://capnproto.org/capnp-tool.html).
+
+First, add a dependency to `capnp-swift`:
+
+```swift
+// Package.swift
+
+let package = Package(
+  dependencies: [
+    .package(url: "https://github.com/71/capnp-swift", branch: "main"),
+  ],
+  targets: [
+    .target(
+      name: "MyTarget",
+      dependencies: [
+        .product(name: "CapnProto", package: "capnp-swift"),
+      ]
+    ),
+  ]
+)
+```
+
+Then, use `capnp compile` to generate your code:
+
+```sh
+capnp compile $(swift package print-capnp-compile) Sources/MyTarget/schema.capnp
+```
+
+> [!NOTE]
+> `swift package print-capnp-compile [output-directory]` automatically resolves
+> paths needed to compile `.capnp` files and generates arguments given to
+> `capnp compile`:
+>
+> ```sh
+> $ swift package print-capnp-compile
+> --output=/path/to/project/.build/arm64-apple-macosx/debug/capnpc-swift-tool --import-path=/path/to/capnp-swift/
+> ```
+>
+> An even more manual way to do this is to build `capnpc-swift` and use its
+> path:
+>
+> ```sh
+> $ swift build --product capnpc-swift --show-bin-path
+> /path/to/project/.build/arm64-apple-macosx/debug
+> ```
+
 ## Design
 
 Unlike the [C++](https://capnproto.org/cxx.html) and

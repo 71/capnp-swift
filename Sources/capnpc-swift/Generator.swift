@@ -53,8 +53,7 @@ public func generateFiles(
       guard var filePath = try mapError(file.filename().toString()) else {
         throw .missingValue(path: "requestedFiles", fieldName: "filename")
       }
-
-      capitalizeFileName(filePath: &filePath)
+      filePath.append(".swift")
 
       try generator.file(file, fileIdToModuleMap: fileIdToModuleMap)
 
@@ -891,7 +890,7 @@ extension Generator {
       in: self,
       fieldName: "node.displayName"
     )
-    capitalizeFileName(filePath: &moduleName)
+    moduleName.append(".swift")
 
     if let index = moduleName.lastIndex(of: "/") {
       moduleName.removeSubrange(moduleName.startIndex...index)
@@ -1446,18 +1445,6 @@ private struct UnionInformation {
   func writeExpr(discriminantValue: UInt16) -> String {
     "struct$.write(UInt16(\(discriminantValue)), atByte: \(discriminantOffset * 2))"
   }
-}
-
-func capitalizeFileName(filePath: inout String) {
-  let fileNameStartRange = filePath.lastIndex(of: "/") ?? filePath.startIndex
-
-  filePath.replace(/(?:^|[-_\/]+)(\w)/) { match in
-    match.range.lowerBound == fileNameStartRange
-      ? Substring(match.output.0.uppercased())
-      : match.range.lowerBound > fileNameStartRange
-        ? Substring(match.output.1.uppercased()) : match.output.0
-  }
-  filePath.append(".swift")
 }
 
 /// Runs `f()`, converting `PointerError`s to `GenerateError.invalidSchema`.
