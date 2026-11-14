@@ -333,7 +333,7 @@ public struct AnyPointer {
     return ListPointer(
       data: pointer,
       elementSize: elementSize,
-      count: totalWords
+      count: count
     )
   }
 

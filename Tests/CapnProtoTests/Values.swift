@@ -27,3 +27,14 @@ func enumValue() async throws {
   #expect(test.enum.orNil == .a)
   #expect(test.enum.rawValue == 0)
 }
+
+@Test
+func primitiveListCount() async throws {
+  let test = TestValues()
+  let ints = try #require(test.initInts(count: 3))
+
+  #expect(ints.count == 3)
+  #expect(ints.write(7, at: 2))
+  #expect(try test.ints().count == 3)
+  #expect(try test.ints()[2] == 7)
+}
