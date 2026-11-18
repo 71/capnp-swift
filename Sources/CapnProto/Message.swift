@@ -134,17 +134,28 @@ public struct Message: Freezable {
 
   /// Adds a segment with the given word capacity and initial words.
   private func add(minWordCapacity: UInt32, initialWords: UInt32) {
-    add(
-      segment: .init(
-        wordCapacity: max(
-          segments.last!.wordCapacity * 2,
-          minWordCapacity.nextPowerOfTwo,
-          512
-        ),
-        initialWords: initialWords
-      )
+    // Grow geometrically, computing in `UInt64` since doubling can overflow `UInt32`. Cap growth
+    // at `maxGrownSegmentWords`, but never below what was requested.
+    //
+    // `nextPowerOfTwo` yields 0 above 2^31 (as `<<` does not trap on overflow), in which case
+    // `minWordCapacity` below wins.
+    let grownCapacity = max(
+      UInt64(segments.last!.wordCapacity) * 2,
+      UInt64(minWordCapacity.nextPowerOfTwo),
+      512
     )
+    let wordCapacity = max(
+      minWordCapacity,
+      UInt32(min(grownCapacity, UInt64(Self.maxGrownSegmentWords)))
+    )
+
+    add(segment: .init(wordCapacity: wordCapacity, initialWords: initialWords))
   }
+
+  /// The maximum capacity of a segment added to grow the message, unless a single allocation
+  /// needs more. Pointer offsets are encoded in 29 or 30 bits, so larger segments would not be
+  /// fully addressable anyway.
+  private static let maxGrownSegmentWords: UInt32 = 1 << 29
 
   /// Adds a segment to the message using CoW semantics.
   fileprivate func add(segment: Segment.Data) {

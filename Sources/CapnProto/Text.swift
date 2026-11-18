@@ -11,12 +11,18 @@ public struct Text {
   public init() { self.bytes = List<UInt8>() }
 
   /// Converts the `Text` to a `String`, returning `nil` if the text is not valid UTF-8.
+  ///
+  /// The trailing NUL byte is dropped if present. Only `bytes.count` bytes are read, so text
+  /// without a NUL terminator is accepted rather than read past its end, and embedded NUL
+  /// bytes are kept.
   public func toString() -> String? {
-    guard !bytes.isEmpty else { return "" }
+    var utf8 = bytes.bytes()
 
-    return bytes.list$.data.pointer.withMemoryRebound(to: CChar.self, capacity: 1) {
-      .init(validatingCString: $0)
+    if utf8.last == 0 {
+      utf8 = .init(rebasing: utf8.dropLast())
     }
+
+    return String(validating: utf8, as: UTF8.self)
   }
 
   public static func readOnly(_ string: String) -> Self {
@@ -24,8 +30,13 @@ public struct Text {
 
     return .init(
       string.withUTF8 { utf8 in
-        let data = UnsafeMessagePointer.readOnly(bytes: .init(utf8))
-        let list = ListPointer(data: data, elementSize: .oneByte, count: UInt32(utf8.count))
+        // +1 for the NUL terminator. The rest of the last word is zero-filled as well.
+        let byteCount = utf8.count + 1
+        var words = [Word](repeating: 0, count: byteCount.divideRoundingUp(by: 8))
+        words.withUnsafeMutableBytes { $0.copyMemory(from: .init(utf8)) }
+
+        let data = UnsafeMessagePointer.readOnly(words: words)
+        let list = ListPointer(data: data, elementSize: .oneByte, count: UInt32(byteCount))
 
         return List<UInt8>(unchecked: list)
       }

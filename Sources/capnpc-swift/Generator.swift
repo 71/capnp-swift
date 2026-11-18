@@ -386,6 +386,26 @@ extension Generator {
       pathSegments.isEmpty
       ? "" : pathSegments.joined(separator: ".") + "."
 
+    guard !enumerants.isEmpty else {
+      // Swift enums with a raw type must have at least one case, so we use a struct which cannot
+      // be constructed from any raw value instead.
+      line("/// `\(name)` has no enumerants, so no value is valid.")
+      line("public struct \(typeIdent(name)): CapnProto.Enum {")
+      line("  public static let id: UInt64 = \(id(node.id))")
+      line("  public static let defaultValue: Self = .init(unchecked: 0)")
+      line("  public static let maxValue: Self = .init(unchecked: 0)")
+      line()
+      line("  public let rawValue: UInt16")
+      line()
+      line("  /// Always returns `nil`, as `\(name)` has no enumerants.")
+      line("  public init?(rawValue: UInt16) { return nil }")
+      line()
+      line("  private init(unchecked rawValue: UInt16) { self.rawValue = rawValue }")
+      line("}")
+      line()
+      return
+    }
+
     line("public enum \(typeIdent(name)): UInt16, CapnProto.Enum {")
     extensionLine("extension CapnProto.EnumValue<\(pathPrefix)\(typeIdent(name))> {")
     try withExtendedLifetime(scope(id: node.id, named: name)) { () throws(GenerateError) in
@@ -449,26 +469,7 @@ extension Generator {
       if struct_.discriminantCount > 0 && struct_.discriminantOffset == 0 {
         line("public static let firstFieldSize: CapnProto.ListElementSize? = .twoBytes")
       } else {
-        let firstFieldSizeStr =
-          namedFields.compactMap { (_, field) -> String? in
-            guard
-              field.discriminantValue == 0xffff,
-              let slot = field.slot,
-              let type = try? slot.type().whichDiscriminant.orNil
-            else { return nil }
-
-            return switch type {
-            case .bool:
-              nil  // A list of voids or bools cannot become a struct.
-
-            case .void: ".zero"
-            case .int8, .uint8: ".oneByte"
-            case .int16, .uint16, .enum: ".twoBytes"
-            case .int32, .uint32, .float32: ".fourBytes"
-            case .int64, .uint64, .float64: ".eightBytes"
-            case .text, .data, .list, .anyPointer, .struct, .interface: ".pointer"
-            }
-          }.first ?? "nil"
+        let firstFieldSizeStr = try firstFieldSize(of: fields) ?? "nil"
 
         line(
           "public static let firstFieldSize: CapnProto.ListElementSize? = \(firstFieldSizeStr)"
@@ -583,12 +584,58 @@ extension Generator {
     line()
   }
 
+  /// Returns the `ListElementSize` (as Swift source) of a list of primitives which can be upgraded
+  /// to a list of the struct with the given `fields`, or `nil` if there is none.
+  ///
+  /// > A field of type `List(T)`, where `T` is a primitive type, blob, or list, may be changed to
+  /// > type `List(U)`, where `U` is a struct type whose `@0` field is of type `T`.
+  func firstFieldSize(of fields: List<Field>) throws(GenerateError) -> String? {
+    guard let slot = try slotWithOrdinalZero(in: fields) else { return nil }
+
+    let type = try mapError(slot.type()).whichDiscriminant.orNil.orMissing(
+      in: self,
+      fieldName: "field.slot.type.which"
+    )
+
+    return switch type {
+    case .void: ".zero"
+    case .bool: nil  // A list of bools cannot become a struct.
+    case .int8, .uint8: ".oneByte"
+    case .int16, .uint16, .enum: ".twoBytes"
+    case .int32, .uint32, .float32: ".fourBytes"
+    case .int64, .uint64, .float64: ".eightBytes"
+    case .text, .data, .list, .anyPointer, .struct, .interface: ".pointer"
+    }
+  }
+
+  /// Returns the slot with ordinal `@0` among `fields` and the fields of their groups
+  /// (recursively). There is none for empty structs, and for groups.
+  private func slotWithOrdinalZero(in fields: List<Field>) throws(GenerateError) -> Field.Slot? {
+    for field in fields {
+      if let group = field.group {
+        let groupNode = try self.node(group.typeId)
+        let groupFields = try mapError(try groupNode.struct?.fields()).orMissing(
+          in: self,
+          fieldName: "group.struct.fields"
+        )
+
+        if let slot = try slotWithOrdinalZero(in: groupFields) {
+          return slot
+        }
+      } else if let slot = field.slot, field.ordinal.explicit == 0 {
+        return slot
+      }
+    }
+
+    return nil
+  }
+
   mutating func which(_ union: UnionInformation) throws(GenerateError) {
     line("public enum Which {")
     try withExtendedLifetime(scope()) { () throws(GenerateError) in
       line("public enum Discriminant: UInt16, CapnProto.EnumOrDiscriminant {")
-      line("  public static let defaultValue: Discriminant = .\(union.fields.first!.name)")
-      line("  public static let maxValue: Discriminant = .\(union.fields.last!.name)")
+      line("  public static let defaultValue: Discriminant = .\(ident(union.fields.first!.name))")
+      line("  public static let maxValue: Discriminant = .\(ident(union.fields.last!.name))")
       line()
       extensionLine("extension CapnProto.EnumValue<\(path).Which.Discriminant> {")
       for (fieldName, field) in union.fields {
@@ -605,9 +652,10 @@ extension Generator {
       for (fieldName, field) in union.fields {
         let fieldType: String =
           switch try mapError(field.slot?.type())?.whichDiscriminant.orNil {
-          case nil: "(\(capitalized: fieldName))"  // Group.
+          case nil: "(\(typeIdent(capitalizedFirst(fieldName))))"  // Group.
           case .void: ""
           case .anyPointer: "(CapnProto.AnyPointer?)"
+          case .interface: "(CapnProto.AnyCapability?)"
           default: try "(\(try! field.slot!.type(), in: &self))"
           }
 
@@ -619,7 +667,7 @@ extension Generator {
 
     line("public var whichDiscriminant: CapnProto.EnumValue<Which.Discriminant> {")
     line(
-      "  struct$.readEnum(atByte: \(union.discriminantOffset * 2), defaultValue: .\(union.fields.first!.name))"
+      "  struct$.readEnum(atByte: \(union.discriminantOffset * 2), defaultValue: .\(ident(union.fields.first!.name)))"
     )
     line("}")
     line()
@@ -645,7 +693,7 @@ extension Generator {
             "(.init(struct$))"  // Group.
           }
 
-        line("case \(field.discriminantValue): .\(fieldName)\(arg)")
+        line("case \(field.discriminantValue): .\(ident(fieldName))\(arg)")
       }
       line("default: nil")
       line("}")
@@ -689,7 +737,7 @@ extension Generator {
       }
 
     case .bool, .int8, .uint8, .int16, .uint16, .int32, .uint32,
-      .float32, .int64, .uint64, .float64, .enum, .interface:
+      .float32, .int64, .uint64, .float64, .enum:
       if let discriminantValue {
         line("public var \(ident(fieldName)): \(typeString)? {")
         try line(
@@ -708,6 +756,32 @@ extension Generator {
           "  get { \(read: slot, named: fieldName, defaultValue: defaultValueExpr, in: &self) }"
         )
         try line("  nonmutating set { \(write: slot, defaultValue: defaultValueExpr, in: &self) }")
+        line("}")
+      }
+
+    case .interface:
+      // Capabilities are pointers, so reading them may fail; and they may be null.
+      let typeString = "CapnProto.AnyCapability"
+
+      if let discriminantValue {
+        line("public func \(ident(fieldName))() throws(CapnProto.PointerError) -> \(typeString)? {")
+        try line(
+          "  whichDiscriminant.rawValue == \(discriminantValue) ? \(read: slot, named: fieldName, in: &self) : nil"
+        )
+        line("}")
+        line()
+        line("public func set\(capitalized: fieldName)(_ newValue: \(typeString)) {")
+        line("  if \(union!.writeExpr(discriminantValue: discriminantValue)) {")
+        try line("    \(write: slot, in: &self)")
+        line("  }")
+        line("}")
+      } else {
+        line("public func \(ident(fieldName))() throws(CapnProto.PointerError) -> \(typeString)? {")
+        try line("  \(read: slot, named: fieldName, in: &self)")
+        line("}")
+        line()
+        line("public func set\(capitalized: fieldName)(_ newValue: \(typeString)) {")
+        try line("  \(write: slot, in: &self)")
         line("}")
       }
 
@@ -801,11 +875,11 @@ extension Generator {
         (".init(struct$)", "")
       }
 
-    line("public var \(ident(fieldName)): \(groupName)\(opt) { \(getter) }")
+    line("public var \(ident(fieldName)): \(typeIdent(groupName))\(opt) { \(getter) }")
 
     if let discriminantValue {
       line()
-      line("public func init\(groupName)() -> \(groupName) {")
+      line("public func init\(groupName)() -> \(typeIdent(groupName)) {")
       try withExtendedLifetime(scope()) { () throws(GenerateError) in
         line("_ = \(union!.writeExpr(discriminantValue: discriminantValue))")
 
@@ -852,8 +926,11 @@ extension Generator {
 
     case .int32, .uint32, .float32:
       line("_ = struct$.write(UInt32(0), atByte: \(slot.offset * 4))")
-    case .int64, .uint64, .float64, .text, .data, .list, .struct, .interface, .anyPointer:
+    case .int64, .uint64, .float64:
       line("_ = struct$.write(UInt64(0), atByte: \(slot.offset * 8))")
+    case .text, .data, .list, .struct, .interface, .anyPointer:
+      // Pointer offsets are indices in the pointer section, not in the data section.
+      line("_ = struct$.clearPointer(at: \(slot.offset))")
     }
   }
 
@@ -885,17 +962,18 @@ extension Generator {
       return moduleName
     }
 
-    // Fall back to the file name.
+    // Fall back to the file name, without its directory and `.capnp` extension.
     var moduleName = try mapError(node.displayName().toString()).orMissing(
       in: self,
       fieldName: "node.displayName"
     )
-    moduleName.append(".swift")
 
     if let index = moduleName.lastIndex(of: "/") {
       moduleName.removeSubrange(moduleName.startIndex...index)
     }
-    moduleName.removeLast(".swift".count)
+    if moduleName.hasSuffix(".capnp") {
+      moduleName.removeLast(".capnp".count)
+    }
 
     let moduleNameSubstring = Substring(moduleName)
 
@@ -1153,8 +1231,12 @@ extension DefaultStringInterpolation {
 
         assert(listCopy.data.message.segmentCount == 1)
 
+        // Start at the first element: after the root pointer, and after the tag word for
+        // composite lists. Elements keep their relative layout, so their pointers stay valid.
+        let firstElementWord = listCopy.data.byteOffset / 8
+
         appendInterpolation(
-          ".init(unchecked: .init(data: \(pointerFromWords: listCopy.data.message.firstSegment.buffer.advanced(by: 1)), elementSize: \(listCopy.elementSize), count: \(list.count)))"
+          ".init(unchecked: .init(data: \(pointerFromWords: listCopy.data.message.firstSegment.buffer.advanced(by: firstElementWord)), elementSize: \(listCopy.elementSize), count: \(list.count)))"
         )
       }
 
@@ -1166,8 +1248,10 @@ extension DefaultStringInterpolation {
       }
       assert(structCopy.data.message.segmentCount == 1)
 
+      let structStartWord = structCopy.data.byteOffset / 8
+
       appendInterpolation(
-        ".init(.init(data: \(pointerFromWords: structCopy.data.message.firstSegment.buffer.advanced(by: 1)), size: \(structCopy.size)))"
+        ".init(.init(data: \(pointerFromWords: structCopy.data.message.firstSegment.buffer.advanced(by: structStartWord)), size: \(structCopy.size)))"
       )
 
     case .interface:
@@ -1175,7 +1259,7 @@ extension DefaultStringInterpolation {
 
     case .anyPointer(let anyPointer):
       guard let copiedPointer = try mapError(anyPointer?.copy()) else {
-        appendInterpolation(".init(unsafePointer: .readOnly())")
+        appendInterpolation(".init(unsafePointer: .null.value)")
         return
       }
 
@@ -1217,7 +1301,8 @@ extension DefaultStringInterpolation {
 
   fileprivate mutating func appendInterpolation(pointerFromWords: UnsafeBufferPointer<Word>) {
     guard let firstWord = pointerFromWords.first else {
-      appendInterpolation(".readOnly()")
+      // e.g. lists of zero-sized structs, which have no data.
+      appendInterpolation(".readOnly(words: [])")
       return
     }
 
@@ -1269,7 +1354,7 @@ extension DefaultStringInterpolation {
       appendInterpolation("struct$.readAnyPointer(at: \(slot.offset))\(defaultSuffix)")
 
     case .interface:
-      appendInterpolation("struct$.readAnyCapability(at: \(slot.offset))")
+      appendInterpolation("try struct$.readCapability(at: \(slot.offset))")
 
     case .data, .list, .struct, .text:
       let fnName =
@@ -1323,7 +1408,9 @@ extension DefaultStringInterpolation {
       fatalError("cannot generate write for AnyPointer field")
 
     case .interface:
-      appendInterpolation("_ = struct$.writeAnyCapability(newValue, at: \(slot.offset))")
+      appendInterpolation(
+        "_ = struct$.writeCapability(at: \(slot.offset), capabilityIndex: newValue.capabilityIndex)"
+      )
 
     case .text:
       appendInterpolation("struct$.writeText(text, at: \(slot.offset))")
@@ -1367,7 +1454,7 @@ extension DefaultStringInterpolation {
   fileprivate mutating func appendInterpolation(_ size: StructSize) {
     switch (size.dataBytes, size.pointers) {
     case (0, 0):
-      appendInterpolation(".zero")
+      appendInterpolation(".empty")
     case (0, let pointers):
       appendInterpolation(".init(pointers: \(pointers))")
     case (let dataBytes, 0):
@@ -1408,22 +1495,43 @@ func deserializationIsFallible(field: Field) -> Bool {
   }
 }
 
+/// Escapes `text` if it is a Swift keyword which cannot be used as an identifier.
 private func ident(_ text: some StringProtocol) -> Substring {
+  swiftKeywords.contains(String(text)) ? "`\(text)`" : .init(text)
+}
+
+/// Same as `ident()`, but also escapes names which cannot be used as nested type names.
+private func typeIdent(_ text: some StringProtocol) -> Substring {
   switch text {
-  case "self", "struct", "enum":
+  case "Type", "Protocol":
     "`\(text)`"
   default:
-    .init(text)
+    ident(text)
   }
 }
 
-private func typeIdent(_ text: some StringProtocol) -> Substring {
-  switch text {
-  case "Type":
-    "`\(text)`"
-  default:
-    .init(text)
-  }
+/// Swift keywords which must be escaped with backticks to be used as identifiers.
+///
+/// https://docs.swift.org/swift-book/documentation/the-swift-programming-language/lexicalstructure#Keywords-and-Punctuation
+/// (contextual keywords like `get` or `mutating` are valid identifiers, so they are omitted).
+private let swiftKeywords: Set<String> = [
+  // Keywords used in declarations.
+  "associatedtype", "borrowing", "class", "consuming", "deinit", "enum", "extension",
+  "fileprivate", "func", "import", "init", "inout", "internal", "let", "nonisolated", "open",
+  "operator", "private", "precedencegroup", "protocol", "public", "rethrows", "static", "struct",
+  "subscript", "typealias", "var",
+  // Keywords used in statements.
+  "break", "case", "catch", "continue", "default", "defer", "do", "else", "fallthrough", "for",
+  "guard", "if", "in", "repeat", "return", "throw", "switch", "where", "while",
+  // Keywords used in expressions and types.
+  "Any", "as", "await", "false", "is", "nil", "self", "Self", "super", "throws", "true", "try",
+]
+
+/// Uppercases the first character of `text`, as done for group type names.
+private func capitalizedFirst(_ text: String) -> String {
+  guard let first = text.first else { return text }
+
+  return first.uppercased() + text.dropFirst()
 }
 
 private func id(_ id: UInt64) -> String { "0x\(String(id, radix: 16))" }

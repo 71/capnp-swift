@@ -97,7 +97,7 @@ public struct ListPointer: MessagePointer, Freezable {
     -> T
   {
     precondition(index >= 0 && index < count)
-    precondition(T.elementSize == elementSize)
+    precondition(isCompatible(with: T.self))
 
     return try T.read(in: self, uncheckedAt: index)
   }
@@ -121,11 +121,12 @@ public struct ListPointer: MessagePointer, Freezable {
     var value = value
 
     return value.withUTF8 { bytes in
-      guard let list = initList(n: bytes.count, at: index, of: UInt8.self) else {
+      // +1 for the NUL terminator, which is already zero in the newly allocated list.
+      guard let list = initList(n: bytes.count + 1, at: index, of: UInt8.self) else {
         return false
       }
 
-      bytes.copyBytes(to: list.mutableBytes())
+      UnsafeMutableRawBufferPointer(list.mutableBytes()).copyMemory(from: .init(bytes))
 
       return true
     }
@@ -143,7 +144,7 @@ public struct ListPointer: MessagePointer, Freezable {
     }
 
     // Keep this check in sync with `readStruct()` below.
-    guard let firstFieldSize else { return false }
+    guard let firstFieldSize, elementSize != .oneBit else { return false }
 
     return firstFieldSize.rawValue == elementSize.rawValue
   }
@@ -156,12 +157,14 @@ public struct ListPointer: MessagePointer, Freezable {
     }
   }
 
+  /// Initializes a list of `n` elements at the given index, which must be under `count`. Returns
+  /// `nil` if the list is read-only, or if `n` is too large to be encoded.
   public func initList(n: Int, elementSize: ListElementSize, at index: Int) -> ListPointer? {
-    guard !data.isReadOnly else { return nil }
+    guard !data.isReadOnly, let n = UInt32(exactly: n) else { return nil }
 
     let pointer = pointer(at: index)
 
-    return pointer.initList(count: UInt32(n), elementSize: elementSize)
+    return pointer.initList(count: n, elementSize: elementSize)
   }
 
   public func initList<T: ListElement>(n: Int, at index: Int, of type: T.Type = T.self)
@@ -191,7 +194,13 @@ public struct ListPointer: MessagePointer, Freezable {
     case .zero:
       .init()
 
-    case .oneBit, .oneByte:
+    case .oneBit:
+      // https://capnproto.org/language.html#evolving-your-protocol:
+      //
+      // > `List(Bool)` may not be upgraded to a list of structs
+      throw .unexpectedPointerType
+
+    case .oneByte:
       .init(
         data: data.advanced(byBytes: index),
         size: .init(dataBytes: 1)
@@ -236,7 +245,11 @@ public struct ListPointer: MessagePointer, Freezable {
     case .zero:
       StructPointer(data: data, size: .empty)
 
-    case .oneBit, .oneByte:
+    case .oneBit:
+      // Elements are bits, so they cannot be addressed as structs; see `readStruct()`.
+      nil
+
+    case .oneByte:
       StructPointer(
         data: data.advanced(byBytes: index),
         size: .init(dataBytes: 1)

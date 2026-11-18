@@ -41,7 +41,9 @@ extension StructPointer {
   public func read(atBit offset: UInt32, defaultValue: Bool = false) -> Bool {
     let (byteOffset, bitOffset) = offset.quotientAndRemainder(dividingBy: 8)
 
-    guard byteOffset < size.sizeInBytes else { return defaultValue }
+    // Compare with `dataBytes`, not `sizeInBytes`: bits past the data section belong to the
+    // pointer section (or to the next element of a list).
+    guard byteOffset < size.dataBytes else { return defaultValue }
 
     let bitIsSet =
       data.pointer.load(fromByteOffset: Int(byteOffset), as: UInt8.self) & (1 << bitOffset)
@@ -60,7 +62,8 @@ extension StructPointer {
 
     let (byteOffset, bitOffset) = offset.quotientAndRemainder(dividingBy: 8)
 
-    guard byteOffset < size.sizeInBytes else { return false }
+    // See `read(atBit:defaultValue:)`.
+    guard byteOffset < size.dataBytes else { return false }
 
     mutablePointer.advanced(by: Int(byteOffset)).withMemoryRebound(
       to: UInt8.self,
@@ -96,7 +99,7 @@ extension StructPointer {
     else { return false }
 
     mutablePointer.storeBytes(
-      of: value ^ defaultValue,
+      of: (value ^ defaultValue).littleEndian,
       toByteOffset: Int(offset),
       as: T.self
     )
@@ -125,7 +128,7 @@ extension StructPointer {
     }
 
     mutablePointer.storeBytes(
-      of: value.bitPattern ^ defaultValue.bitPattern,
+      of: (value.bitPattern ^ defaultValue.bitPattern).littleEndian,
       toByteOffset: Int(offset),
       as: UInt32.self
     )
@@ -138,7 +141,7 @@ extension StructPointer {
     guard offset + 8 <= size.dataBytes else { return defaultValue }
 
     return .init(
-      bitPattern: data.pointer.load(fromByteOffset: Int(offset), as: UInt64.self)
+      bitPattern: data.pointer.loadLe(fromByteOffset: Int(offset), as: UInt64.self)
         ^ defaultValue.bitPattern
     )
   }
@@ -154,7 +157,7 @@ extension StructPointer {
     }
 
     mutablePointer.storeBytes(
-      of: value.bitPattern ^ defaultValue.bitPattern,
+      of: (value.bitPattern ^ defaultValue.bitPattern).littleEndian,
       toByteOffset: Int(offset),
       as: UInt64.self
     )
@@ -220,10 +223,13 @@ extension StructPointer {
 
   /// Initializes a list at the given pointer index. Returns `nil` if the index exceeds the
   /// pointer section size.
+  ///
+  /// Also returns `nil` if the struct is read-only, or if `count` is too large to be encoded.
   public func initList(at index: UInt16, count: Int, elementSize: ListElementSize) -> ListPointer? {
-    guard !data.isReadOnly, let pointer = pointer(at: index) else { return nil }
+    guard !data.isReadOnly, let pointer = pointer(at: index), let count = UInt32(exactly: count)
+    else { return nil }
 
-    return pointer.initList(count: UInt32(count), elementSize: elementSize)
+    return pointer.initList(count: count, elementSize: elementSize)
   }
 
   /// Initializes a list at the given pointer index. Returns `nil` if the index exceeds the
@@ -282,6 +288,20 @@ extension StructPointer {
     }
 
     pointer.writeCapability(capabilityIndex: capabilityIndex)
+
+    return true
+  }
+
+  /// Sets the pointer at the given index to null. Returns `false` if the struct is read-only or
+  /// if the index exceeds the pointer section size.
+  ///
+  /// The data the pointer pointed to (if any) is not reclaimed.
+  public func clearPointer(at index: UInt16) -> Bool {
+    guard !data.isReadOnly, let pointer = pointer(at: index) else {
+      return false
+    }
+
+    pointer.write(word: 0)
 
     return true
   }

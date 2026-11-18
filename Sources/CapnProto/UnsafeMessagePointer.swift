@@ -94,7 +94,8 @@ public struct UnsafeMessagePointer: Freezable {
       message: message,
       segmentIndex: 0,
       pointer: message.segments.first!.rawPointer,
-      traversalLimit: traversalLimit
+      traversalLimit: traversalLimit,
+      readOnly: readOnly
     )
   }
 
@@ -165,11 +166,22 @@ public struct UnsafeMessagePointer: Freezable {
   }
 
   public mutating func freeze() -> Frozen<UnsafeMessagePointer> {
-    .init(
+    // Compute the offset relative to the segment that `pointer` currently points into, before
+    // `freeze()` possibly gives us a copy of the message.
+    let byteOffset = self.byteOffset
+    let frozenMessage = message.freeze().value
+
+    // If the message was copied, `pointer` still points into the original message, which may
+    // be mutated or deallocated. Rebase it onto the frozen message's segment.
+    let frozenPointer = frozenMessage.segments[Int(segmentIndex)].rawPointer.advanced(
+      by: byteOffset
+    )
+
+    return .init(
       unsafeFrozen: .init(
-        message: message.freeze().value,
+        message: frozenMessage,
         segmentIndex: segmentIndex,
-        pointer: pointer,
+        pointer: frozenPointer,
         traversalLimit: traversalLimit,
         readOnly: true
       )
@@ -225,10 +237,8 @@ extension UnsafeMessagePointer {
   /// Returns a pointer to the start of a message with the given words.
   public static func readOnly(bytes: UnsafeRawBufferPointer) -> UnsafeMessagePointer {
     let wordsCount = bytes.count.divideRoundingUp(by: 8)
-    let words = [Word](unsafeUninitializedCapacity: wordsCount) { (wordsBytes, count) in
-      bytes.copyBytes(to: wordsBytes)
-      count = wordsCount
-    }
+    var words = [Word](repeating: 0, count: wordsCount)
+    words.withUnsafeMutableBytes { $0.copyMemory(from: bytes) }
     return .readOnly(words: words)
   }
 }

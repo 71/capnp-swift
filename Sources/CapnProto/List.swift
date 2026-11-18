@@ -73,7 +73,13 @@ public struct List<T: ListElement>: MessagePointer, Freezable {
 
   /// Returns whether the element at the given index is null, which must be under `count`.
   public func isNull(at index: Int) -> Bool where T: MessagePointer {
-    list$.isNull(at: index)
+    guard case .pointer = T.elementSize else {
+      // Structs are stored inline in their list, so they cannot be null.
+      precondition(index >= 0 && index < count)
+      return false
+    }
+
+    return list$.isNull(at: index)
   }
 
   /// Initializes a struct at the given index, which must be under `count`.
@@ -109,7 +115,9 @@ extension List: Collection, BidirectionalCollection, RandomAccessCollection {
   public var endIndex: Int { count }
 
   public subscript(position: Int) -> T.Result {
-    T.readNonThrowing(in: list$, uncheckedAt: position)
+    precondition(position >= 0 && position < count)
+
+    return T.readNonThrowing(in: list$, uncheckedAt: position)
   }
 
   public func index(after i: Int) -> Int { i + 1 }

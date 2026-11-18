@@ -10,8 +10,10 @@ extension UnsafeRawBufferPointer {
     self = advanced(by: byteCount)
   }
 
+  /// Loads a little-endian integer. Unlike `load()`, `offset` need not be aligned, as stream
+  /// framing is often read from arbitrary byte buffers.
   internal func loadLe<T: FixedWidthInteger>(fromByteOffset offset: Int = 0, as type: T.Type) -> T {
-    return load(fromByteOffset: offset, as: T.self).littleEndian
+    return loadUnaligned(fromByteOffset: offset, as: T.self).littleEndian
   }
 }
 

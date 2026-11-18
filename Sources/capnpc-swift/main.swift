@@ -110,11 +110,11 @@ func readStdin() throws -> Message {
     }
   #endif
 
-  var chunk = Data(capacity: chunkSize)
+  // `Data(capacity:)` would have a `count` of 0, so we could not write into it.
+  var chunk = [UInt8](repeating: 0, count: chunkSize)
   var message: Message?
 
-  while chunk.withUnsafeMutableBytes({ chunkBufferRaw in
-    let chunkBuffer = chunkBufferRaw.bindMemory(to: UInt8.self)
+  while chunk.withUnsafeMutableBufferPointer({ chunkBuffer in
     let chunkPointer = chunkBuffer.baseAddress!
     let readBytes = read(STDIN_FILENO, chunkPointer, chunkSize)
 

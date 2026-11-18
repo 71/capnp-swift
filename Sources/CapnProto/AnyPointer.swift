@@ -24,7 +24,8 @@ public struct AnyPointer {
       message: unsafePointer.message,
       segmentIndex: unsafePointer.segmentIndex,
       pointer: unsafePointer.pointer,
-      traversalLimit: unsafePointer.traversalLimit - 1
+      traversalLimit: unsafePointer.traversalLimit - 1,
+      readOnly: unsafePointer.isReadOnly
     )
 
     return try AnyPointer(unsafePointer: withLowerTraversalLimit)
@@ -49,6 +50,16 @@ public struct AnyPointer {
 
   /// Resolves an intra-segment pointer encoded in `word`.
   private func resolveIntraSegment(word: Word) throws(PointerError) -> ResolvedPointer {
+    if (word & 0b11) == 3 {
+      // A (2 bits) = 3, to indicate that this is an "other" pointer.
+      // B (30 bits) = 0, to indicate that this is a capability pointer.
+      //
+      // Check B before it is interpreted as an offset below, which would add 1 to it.
+      guard readUInt32(in: word, atBit: 2, bitWidth: 30) == 0 else {
+        throw .unknownPointerType
+      }
+    }
+
     // We can read the same offset for all intra-segment pointers, as they either start with
     // a 30-bit signed offset (struct, list) or an expected value (capability).
     let rawOffsetWords = Int(readInt32(in: word, atBit: 2, bitWidth: 30))
@@ -149,7 +160,7 @@ public struct AnyPointer {
       )
 
       // Read the tag word.
-      let tagWord = unsafePointer.pointer.load(fromByteOffset: offsetBytes, as: Word.self)
+      let tagWord = unsafePointer.pointer.loadLe(fromByteOffset: offsetBytes, as: Word.self)
 
       guard (tagWord & 0b11) == 0 else {
         throw .invalidCompositeList
@@ -163,9 +174,10 @@ public struct AnyPointer {
         pointers: pointerSectionWords
       )
 
+      // Widen to `UInt64`, as the product can overflow `UInt32`.
       guard
-        (UInt32(dataSectionWords) + UInt32(pointerSectionWords)) * elementCount
-          == listSize
+        (UInt64(dataSectionWords) + UInt64(pointerSectionWords)) * UInt64(elementCount)
+          == UInt64(listSize)
       else {
         throw .invalidCompositeList
       }
@@ -182,11 +194,9 @@ public struct AnyPointer {
 
     // A (2 bits) = 3, to indicate that this is an "other" pointer.
     case 3:
-      // B (30 bits) = 0, to indicate that this is a capability pointer.
-      guard offsetWords == 0 else {
-        throw .unknownPointerType
-      }
-
+      // B (30 bits) = 0, to indicate that this is a capability pointer. Callers check B, as
+      // `offsetWords` is derived from it differently for intra-segment and double-far pointers.
+      //
       // C (32 bits) = Index of the capability in the message's capability table.
       return .capability(.init(capabilityIndex: data))
 
@@ -222,7 +232,7 @@ public struct AnyPointer {
     }
 
     // Get the landing pad pointer.
-    let landingPadWord = targetSegment.rawPointer.load(
+    let landingPadWord = targetSegment.rawPointer.loadLe(
       fromByteOffset: try landingPadOffset.wordsToBytes(orThrow: PointerError.sizeOverflow),
       as: Word.self
     )
@@ -239,7 +249,9 @@ public struct AnyPointer {
         segmentIndex: targetSegmentId,
         pointer: targetSegment.rawPointer.advanced(
           by: try landingPadOffset.wordsToBytes(orThrow: PointerError.sizeOverflow)
-        )
+        ),
+        traversalLimit: unsafePointer.traversalLimit,
+        readOnly: unsafePointer.isReadOnly
       )
 
       return try AnyPointer(unsafePointer: targetPointer).resolveIntraSegment(
@@ -248,7 +260,7 @@ public struct AnyPointer {
     }
 
     // The landing pad is a far pointer with B == 0.
-    guard (landingPadWord & 0b111) == 0b100 else {
+    guard (landingPadWord & 0b111) == 0b010 else {
       throw .invalidFarPointer
     }
 
@@ -256,7 +268,7 @@ public struct AnyPointer {
     let secondTargetSegmentId = UInt32(landingPadWord >> 32)
 
     // Get the tag word.
-    let tagWord = targetSegment.rawPointer.load(
+    let tagWord = targetSegment.rawPointer.loadLe(
       fromByteOffset: try Int(fromUInt32: landingPadOffset + 1, multipliedBy: 8),
       as: Word.self
     )
@@ -286,7 +298,9 @@ public struct AnyPointer {
       message: unsafePointer.message,
       segmentIndex: secondTargetSegmentId,
       // Do not advance the pointer, as this is done by `resolveIntraSegment()`.
-      pointer: secondTargetSegment.rawPointer
+      pointer: secondTargetSegment.rawPointer,
+      traversalLimit: unsafePointer.traversalLimit,
+      readOnly: unsafePointer.isReadOnly
     )
 
     return try AnyPointer(unsafePointer: targetPointer).resolveIntraSegment(
@@ -301,6 +315,9 @@ public struct AnyPointer {
 
   /// Initializes a struct, updating the pointer.
   internal func initStruct(size: StructSize) -> StructPointer {
+    // C (16 bits) only fits data sections of up to 2^16 - 1 words.
+    precondition(size.dataWords <= UInt16.max, "struct data section is too large")
+
     let pointer = allocatePointer(
       words: size.sizeInWords,
       isList: false,
@@ -312,11 +329,15 @@ public struct AnyPointer {
     return StructPointer(data: pointer, size: size)
   }
 
-  /// Initializes a list, updating the pointer.
-  internal func initList(count: UInt32, elementSize: ListElementSize) -> ListPointer {
+  /// Initializes a list, updating the pointer. Returns `nil` if `count` elements of the given
+  /// size cannot be encoded in a list pointer.
+  internal func initList(count: UInt32, elementSize: ListElementSize) -> ListPointer? {
     if case .composite(let structSize) = elementSize {
       return initList(count: count, structSize: structSize)
     }
+
+    // D (29 bits) = Size of the list: when C <> 7: Number of elements in the list.
+    guard count < (1 << 29) else { return nil }
 
     let totalBits = UInt64(elementSize.bits) * UInt64(count)
     let totalWords = UInt32(totalBits.divideRoundingUp(by: 64))
@@ -337,9 +358,16 @@ public struct AnyPointer {
     )
   }
 
-  /// Initializes a list, updating the pointer.
-  internal func initList(count: UInt32, structSize: StructSize) -> ListPointer {
-    let words = structSize.sizeInWords * count
+  /// Initializes a list, updating the pointer. Returns `nil` if `count` elements of the given
+  /// size cannot be encoded in a list pointer.
+  internal func initList(count: UInt32, structSize: StructSize) -> ListPointer? {
+    // The tag word stores the element count in 30 bits, and the list pointer stores the number
+    // of words (excluding the tag) in 29 bits.
+    let words64 = UInt64(structSize.sizeInWords) * UInt64(count)
+
+    guard count < (1 << 30), words64 < (1 << 29) else { return nil }
+
+    let words = UInt32(words64)
     let pointer = allocatePointer(
       words: words + 1,  // +1 for the tag word.
       isList: true,
@@ -364,7 +392,7 @@ public struct AnyPointer {
       | (Word(structSize.dataWords) << 32)
       | (Word(structSize.pointers) << 48)
 
-    pointer.assertMutablePointer.storeBytes(of: tagWord, as: Word.self)
+    pointer.assertMutablePointer.storeBytes(of: tagWord.littleEndian, as: Word.self)
 
     return ListPointer(
       data: try! pointer.advanced(byWords: 1),
@@ -409,7 +437,7 @@ public struct AnyPointer {
 
     // Write the landing pad.
     newPointer.assertMutablePointer.storeBytes(
-      of: typeBits | offsetBits | (Word(data) << 32),
+      of: (typeBits | offsetBits | (Word(data) << 32)).littleEndian,
       as: Word.self
     )
 
@@ -418,8 +446,15 @@ public struct AnyPointer {
     let farPointerTypeBits = Word(2)
     let offsetWords = Word(newPointer.wordOffset)
 
+    precondition(offsetWords < (1 << 29), "landing pad offset does not fit in a far pointer")
+
     // Write the pointer itself.
-    write(word: farPointerTypeBits | (offsetWords << 2) | Word(newPointer.segmentIndex))
+    //
+    // A (2 bits) = 2, to indicate that this is a far pointer.
+    // B (1 bit) = 0, as the landing pad is one word.
+    // C (29 bits) = Offset, in words, of the landing pad within the target segment.
+    // D (32 bits) = ID of the target segment.
+    write(word: farPointerTypeBits | (offsetWords << 3) | (Word(newPointer.segmentIndex) << 32))
 
     return newPointer.advanced(byBytes: 8)  // Skip the landing pad word.
   }
@@ -510,7 +545,10 @@ extension PointerError: CustomStringConvertible {
 /// The `Word` representing a pointer to a zero-sized struct.
 ///
 /// > To encode a struct of zero size, set A, C, and D to zero, and set B (the offset) to -1.
-private let zeroSizedStruct: Word = .init(UInt32.max) << 2
+///
+/// That is `0x0000_0000_FFFF_FFFC`: shifting must happen on 32 bits so that the data and pointer
+/// section sizes (bits 32 and above) stay zero.
+private let zeroSizedStruct: Word = .init(UInt32.max << 2)
 
 /// Decodes the last 32 bits of a struct pointer into its data and pointer section sizes.
 private func decodeStructPointer(_ data: UInt32) -> (
@@ -528,12 +566,12 @@ private func decodeStructPointer(_ data: UInt32) -> (
 extension AnyPointer {
   /// Reads the pointer value.
   internal func read() -> Word {
-    unsafePointer.pointer.load(as: Word.self)
+    unsafePointer.pointer.loadLe(as: Word.self)
   }
 
   /// Writes the pointer value.
   internal func write(word: Word) {
-    unsafePointer.assertMutablePointer.storeBytes(of: word, as: Word.self)
+    unsafePointer.assertMutablePointer.storeBytes(of: word.littleEndian, as: Word.self)
   }
 
   /// Writes the capability at the given pointer index.
@@ -548,8 +586,12 @@ extension AnyPointer {
 
   /// Returns whether the at pointer relative to `raw` is in range.
   private func checkPointerRange(offsetWords: Int, words: UInt32) throws(PointerError) {
+    // `offsetWords` may be negative, so we must check both ends of the range.
+    let startWord = Int(unsafePointer.wordOffset) + offsetWords
+
     guard
-      let endWord = UInt32(exactly: Int(unsafePointer.wordOffset) + offsetWords + Int(words)),
+      startWord >= 0,
+      let endWord = UInt32(exactly: startWord + Int(words)),
       endWord <= unsafePointer.message.segments[Int(unsafePointer.segmentIndex)].words
     else {
       throw PointerError.pointerOutOfRange

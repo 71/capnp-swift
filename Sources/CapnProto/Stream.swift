@@ -8,6 +8,8 @@ public enum MessageStreamError: Error {
   case notEnoughData
   case indexOutOfBounds
   case integerOverflow
+  case tooManySegments
+  case emptyFirstSegment
 }
 
 extension MessageStreamError: CustomStringConvertible {
@@ -19,6 +21,10 @@ extension MessageStreamError: CustomStringConvertible {
       return "Index out of bounds"
     case .integerOverflow:
       return "Size integer overflow"
+    case .tooManySegments:
+      return "Too many segments"
+    case .emptyFirstSegment:
+      return "First segment is empty and has no root pointer"
     }
   }
 }
@@ -30,8 +36,10 @@ extension Message {
   /// Returns a new `Message` parsed from its stream framing.
   public static func fromStream(data: some ContiguousBytes) throws(MessageStreamError) -> Message {
     do {
+      // `data` may not be aligned to 8 bytes, so we cannot bind it to `Word`s. Segments are
+      // copied, so the resulting message is aligned.
       return try data.withUnsafeBytes { bytes in
-        try self.fromStream(copyingFrom: bytes.bindMemory(to: Word.self))
+        try self.fromStream(bytes, borrowBytes: false)
       }
     } catch let e as MessageStreamError {
       throw e
@@ -51,6 +59,8 @@ extension Message {
 
   /// Returns a new `Message` parsed from its stream framing. Segments will be borrowed from the
   /// provided byte buffer and must be kept alive for the lifetime of the message.
+  ///
+  /// The message is read-only, as `bytes` is not mutable.
   public static func fromStream(unsafeBorrowingFrom bytes: UnsafeBufferPointer<Word>)
     throws(MessageStreamError) -> Message
   {
@@ -74,10 +84,7 @@ extension Message {
     }
 
     // (4 bytes) The number of segments, minus one (since there is always at least one segment).
-    let rawSegmentCount = bytes.loadLe(as: UInt32.self)
-    guard rawSegmentCount != .max, let segmentCount = Int(exactly: rawSegmentCount + 1) else {
-      throw .indexOutOfBounds
-    }
+    let segmentCount = Int(try checkedSegmentCount(fromRaw: bytes.loadLe(as: UInt32.self)))
     let paddingBytes = paddingBytesNeeded(forSegmentCount: segmentCount)
     let dataOffset = 4 + segmentCount * 4 + Int(paddingBytes)
 
@@ -85,16 +92,35 @@ extension Message {
       throw .notEnoughData
     }
 
-    let requiredDataBytes = (0..<segmentCount).reduce(0) { sum, i in
-      bytes.loadLe(fromByteOffset: 4 + i * 4, as: UInt32.self)
+    // (N * 4 bytes) The size of each segment, in words. Check that the input holds all of them
+    // before reading or borrowing any segment.
+    var requiredDataBytes = dataOffset
+
+    for i in 0..<segmentCount {
+      let segmentWords = bytes.loadLe(fromByteOffset: 4 + i * 4, as: UInt32.self)
+      try checkSegmentSize(segmentWords, at: i)
+
+      let segmentBytes = try Int(
+        fromUInt32: segmentWords,
+        multipliedBy: 8,
+        orThrow: MessageStreamError.integerOverflow
+      )
+
+      requiredDataBytes = try requiredDataBytes.add(
+        segmentBytes,
+        orThrow: MessageStreamError.integerOverflow
+      )
     }
 
-    guard dataOffset + Int(requiredDataBytes) <= bytes.count else {
+    guard requiredDataBytes <= bytes.count else {
       throw .notEnoughData
     }
 
     let message = Message(unsafeSegmentCapacity: segmentCount)
     var dataPointer = bytes.baseAddress!.advanced(by: dataOffset)
+
+    // Borrowed memory was given to us as immutable, so it must not be written to.
+    message.data.readOnly = borrowBytes
 
     for i in 0..<segmentCount {
       // (N * 4 bytes) The size of each segment, in words.
@@ -129,7 +155,7 @@ extension Message {
 
   /// Returns a new `Message` parsed from a stream of byte chunks.
   @available(macOS 15, iOS 18, *)
-  public func fromStream(_ chunks: some AsyncSequence<ArraySlice<UInt8>, any Error>)
+  public static func fromStream(_ chunks: some AsyncSequence<ArraySlice<UInt8>, any Error>)
     -> some AsyncSequence<
       Message, any Error
     >
@@ -184,7 +210,7 @@ extension Message {
   /// and large enough to store `serializedSize()` bytes.
   public func serialize(unsafeTo bytes: UnsafeMutableRawBufferPointer) {
     // (4 bytes) The number of segments, minus one.
-    bytes.storeBytes(of: UInt32(segments.count - 1), as: UInt32.self)
+    bytes.storeBytes(of: UInt32(segments.count - 1).littleEndian, as: UInt32.self)
 
     // (N * 4 bytes) The size of each segment, in words.
     var offset = 4
@@ -235,16 +261,23 @@ where From.Element == ArraySlice<UInt8> {
 
     func next() async throws -> Message? {
       // Process pending data.
-      if !pendingData.isEmpty, let result = try decoder.push(pendingData) {
-        pendingData = pendingData[result.readBytes...]
+      if !pendingData.isEmpty {
+        let data = pendingData
+        pendingData = []
 
-        return result.message
+        if let result = try decoder.push(data) {
+          // `readBytes` is a count, but slices are indexed relative to their base array.
+          pendingData = data[(data.startIndex + result.readBytes)...]
+
+          return result.message
+        }
+        // Otherwise, the decoder consumed all of `data`.
       }
 
       // Read more data from the source and parse it.
       while let data = try await source.next() {
         if let result = try decoder.push(data) {
-          pendingData = data[result.readBytes...]
+          pendingData = data[(data.startIndex + result.readBytes)...]
 
           return result.message
         }
@@ -339,8 +372,6 @@ public struct MessageStreamDecoder: ~Copyable {
       let region: some ContiguousBytes = region
 
       if let result = try self.push(region) {
-        readBytes += result.readBytes
-
         return Result(message: result.message, readBytes: readBytes + result.readBytes)
       }
 
@@ -403,7 +434,7 @@ extension MessageStreamDecoder {
         let count = bytes.loadLe(as: UInt32.self)
         bytes.advance(by: 4)
 
-        message = try readSegmentSizes(&bytes, segmentCount: count + 1)
+        message = try readSegmentSizes(&bytes, segmentCount: checkedSegmentCount(fromRaw: count))
 
       case .readSegmentCount(let count, let byteIndex):
         message = try readSegmentCountSlow(&bytes, count: count, byteIndex: byteIndex)
@@ -429,7 +460,30 @@ extension MessageStreamDecoder {
       }
     }
 
+    // The message is incomplete, and the caller may release `bytes` once we return. Copy any
+    // segment we borrowed from it so that it does not outlive its buffer.
+    copyBorrowedSegments()
+
     return nil
+  }
+
+  /// Replaces borrowed pending segments by owned copies.
+  private mutating func copyBorrowedSegments() {
+    for i in pendingSegments.indices {
+      guard let pointer = pendingSegments[i].pointer, !pendingSegments[i].ownsData else {
+        continue
+      }
+
+      let byteLength = pendingSegments[i].byteLength
+      let copy = UnsafeMutableRawPointer.allocate(
+        byteCount: byteLength,
+        alignment: MemoryLayout<Word>.alignment
+      )
+      copy.copyMemory(from: pointer, byteCount: byteLength)
+
+      pendingSegments[i].pointer = copy
+      pendingSegments[i].ownsData = true
+    }
   }
 
   private mutating func readSegmentCountSlow(
@@ -449,7 +503,7 @@ extension MessageStreamDecoder {
 
       if byteIndex == 4 {
         // (4 bytes) The number of segments, minus one (since there is always at least one segment).
-        return try readSegmentSizes(&bytes, segmentCount: count + 1)
+        return try readSegmentSizes(&bytes, segmentCount: checkedSegmentCount(fromRaw: count))
       }
       if bytes.isEmpty {
         state = .readSegmentCount(count: count, byteIndex: byteIndex)
@@ -486,6 +540,8 @@ extension MessageStreamDecoder {
 
     while bytes.count >= 4 {
       let segmentWords = bytes.loadLe(as: UInt32.self)
+      try checkSegmentSize(segmentWords, at: Int(i))
+
       let segmentBytes = try Int(
         fromUInt32: segmentWords,
         multipliedBy: 8,
@@ -554,6 +610,8 @@ extension MessageStreamDecoder {
       }
     }
 
+    try checkSegmentSize(words, at: Int(segmentIndex))
+
     let segmentBytes = Int(words) * MemoryLayout<Word>.size
 
     pendingSegments[Int(segmentIndex)] = .unallocated(byteLength: segmentBytes)
@@ -583,12 +641,11 @@ extension MessageStreamDecoder {
     if paddingLeft > 0 {
       // We need to skip some padding bytes.
       if bytes.count < paddingLeft {
-        // We can't skip the whole padding.
+        // We can't skip the whole padding. Compute what's left before consuming `bytes`.
+        let newPaddingLeft = paddingLeft - UInt8(bytes.count)
+
         bytes.advance(by: bytes.count)
-        state = .readSegmentData(
-          segmentIndex: segmentIndex,
-          paddingLeft: paddingLeft - UInt8(bytes.count)
-        )
+        state = .readSegmentData(segmentIndex: segmentIndex, paddingLeft: newPaddingLeft)
         return nil
       }
 
@@ -619,8 +676,11 @@ extension MessageStreamDecoder {
         return nil
       }
 
-      // We can fill the whole segment.
-      if borrowBytes && segment.pointer == nil {
+      // We can fill the whole segment. Only borrow word-aligned bytes, as segments are read as
+      // `Word`s.
+      if borrowBytes && segment.pointer == nil
+        && Int(bitPattern: bytes.baseAddress) % MemoryLayout<Word>.alignment == 0
+      {
         // Borrow the bytes without copying.
         pendingSegments[segmentIndex] = .borrowed(
           pointer: bytes.baseAddress!,
@@ -649,6 +709,9 @@ extension MessageStreamDecoder {
 
     // We have read all segments. Create a new message.
     let message = Message(unsafeSegmentCapacity: pendingSegments.count)
+
+    // Borrowed memory was given to us as immutable, so it must not be written to.
+    message.data.readOnly = pendingSegments.contains { !$0.ownsData }
 
     for segment in pendingSegments {
       assert(segment.byteOffset == segment.byteLength)
@@ -708,6 +771,34 @@ private struct PendingSegment {
     pointer = newPointer
 
     return newPointer
+  }
+}
+
+/// The maximum number of segments accepted in a message.
+///
+/// This is the limit `InputStreamMessageReader` in the C++ implementation intends to enforce,
+/// though its check is off by one and only accepts 511 segments:
+/// https://github.com/capnproto/capnproto/blob/aac38c2a569e0a4c592246aacc5318b3cb20a6f2/c%2B%2B/src/capnp/serialize.c%2B%2B#L193-L196
+///
+/// Without a limit, a 4-byte header could make us reserve memory for billions of segments
+/// before any of their data arrives.
+private let maxSegmentCount: UInt32 = 512
+
+/// Converts the first word of the stream framing (the number of segments minus one) into a
+/// segment count, throwing if that count exceeds `maxSegmentCount`.
+private func checkedSegmentCount(fromRaw rawSegmentCount: UInt32) throws(MessageStreamError) -> UInt32 {
+  // Compare before adding one, as `rawSegmentCount + 1` overflows for `UInt32.max`.
+  guard rawSegmentCount < maxSegmentCount else {
+    throw .tooManySegments
+  }
+  return rawSegmentCount + 1
+}
+
+/// Throws if the segment at `index` cannot be part of a valid message given its size in words.
+private func checkSegmentSize(_ words: UInt32, at index: Int) throws(MessageStreamError) {
+  // The first segment must at least hold the root pointer.
+  guard index != 0 || words > 0 else {
+    throw .emptyFirstSegment
   }
 }
 

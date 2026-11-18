@@ -145,7 +145,7 @@ public struct Node: CapnProto.Struct {
   public struct Struct: CapnProto.Struct {
     public static let id: UInt64 = 0x9ea0b19b37fb4435
     public static let size: CapnProto.StructSize = .init(safeDataBytes: 48, pointers: 6)
-    public static let firstFieldSize: CapnProto.ListElementSize? = .twoBytes
+    public static let firstFieldSize: CapnProto.ListElementSize? = nil
 
     public var struct$: CapnProto.StructPointer
 
@@ -230,7 +230,7 @@ public struct Node: CapnProto.Struct {
   public struct Enum: CapnProto.Struct {
     public static let id: UInt64 = 0xb54ab3364333f598
     public static let size: CapnProto.StructSize = .init(safeDataBytes: 48, pointers: 6)
-    public static let firstFieldSize: CapnProto.ListElementSize? = .pointer
+    public static let firstFieldSize: CapnProto.ListElementSize? = nil
 
     public var struct$: CapnProto.StructPointer
 
@@ -250,7 +250,7 @@ public struct Node: CapnProto.Struct {
   public struct Interface: CapnProto.Struct {
     public static let id: UInt64 = 0xe82753cff0c2218f
     public static let size: CapnProto.StructSize = .init(safeDataBytes: 48, pointers: 6)
-    public static let firstFieldSize: CapnProto.ListElementSize? = .pointer
+    public static let firstFieldSize: CapnProto.ListElementSize? = nil
 
     public var struct$: CapnProto.StructPointer
 
@@ -279,7 +279,7 @@ public struct Node: CapnProto.Struct {
   public struct Const: CapnProto.Struct {
     public static let id: UInt64 = 0xb18aa5ac7a0d9420
     public static let size: CapnProto.StructSize = .init(safeDataBytes: 48, pointers: 6)
-    public static let firstFieldSize: CapnProto.ListElementSize? = .pointer
+    public static let firstFieldSize: CapnProto.ListElementSize? = nil
 
     public var struct$: CapnProto.StructPointer
 
@@ -306,7 +306,7 @@ public struct Node: CapnProto.Struct {
   public struct Annotation: CapnProto.Struct {
     public static let id: UInt64 = 0xec1619d4400a0290
     public static let size: CapnProto.StructSize = .init(safeDataBytes: 48, pointers: 6)
-    public static let firstFieldSize: CapnProto.ListElementSize? = .pointer
+    public static let firstFieldSize: CapnProto.ListElementSize? = nil
 
     public var struct$: CapnProto.StructPointer
 
@@ -413,8 +413,8 @@ public struct Node: CapnProto.Struct {
   public func which() -> Which? {
     switch whichDiscriminant.rawValue {
     case 0: .file
-    case 1: .struct(.init(struct$))
-    case 2: .enum(.init(struct$))
+    case 1: .`struct`(.init(struct$))
+    case 2: .`enum`(.init(struct$))
     case 3: .interface(.init(struct$))
     case 4: .const(.init(struct$))
     case 5: .annotation(.init(struct$))
@@ -494,7 +494,7 @@ public struct Node: CapnProto.Struct {
     _ = struct$.write(false, atBit: 224)
     _ = struct$.write(UInt16(0), atByte: 30)
     _ = struct$.write(UInt32(0), atByte: 32)
-    _ = struct$.write(UInt64(0), atByte: 24)
+    _ = struct$.clearPointer(at: 3)
     return .init(struct$)
   }
 
@@ -503,7 +503,7 @@ public struct Node: CapnProto.Struct {
 
   public func initEnum() -> Enum {
     _ = struct$.write(UInt16(2), atByte: 12)
-    _ = struct$.write(UInt64(0), atByte: 24)
+    _ = struct$.clearPointer(at: 3)
     return .init(struct$)
   }
 
@@ -512,8 +512,8 @@ public struct Node: CapnProto.Struct {
 
   public func initInterface() -> Interface {
     _ = struct$.write(UInt16(3), atByte: 12)
-    _ = struct$.write(UInt64(0), atByte: 24)
-    _ = struct$.write(UInt64(0), atByte: 32)
+    _ = struct$.clearPointer(at: 3)
+    _ = struct$.clearPointer(at: 4)
     return .init(struct$)
   }
 
@@ -522,8 +522,8 @@ public struct Node: CapnProto.Struct {
 
   public func initConst() -> Const {
     _ = struct$.write(UInt16(4), atByte: 12)
-    _ = struct$.write(UInt64(0), atByte: 24)
-    _ = struct$.write(UInt64(0), atByte: 32)
+    _ = struct$.clearPointer(at: 3)
+    _ = struct$.clearPointer(at: 4)
     return .init(struct$)
   }
 
@@ -532,7 +532,7 @@ public struct Node: CapnProto.Struct {
 
   public func initAnnotation() -> Annotation {
     _ = struct$.write(UInt16(5), atByte: 12)
-    _ = struct$.write(UInt64(0), atByte: 24)
+    _ = struct$.clearPointer(at: 3)
     _ = struct$.write(false, atBit: 112)
     _ = struct$.write(false, atBit: 113)
     _ = struct$.write(false, atBit: 114)
@@ -588,7 +588,7 @@ public struct Field: CapnProto.Struct {
   public struct Slot: CapnProto.Struct {
     public static let id: UInt64 = 0xc42305476bb4746f
     public static let size: CapnProto.StructSize = .init(safeDataBytes: 24, pointers: 4)
-    public static let firstFieldSize: CapnProto.ListElementSize? = .fourBytes
+    public static let firstFieldSize: CapnProto.ListElementSize? = nil
 
     public var struct$: CapnProto.StructPointer
 
@@ -632,7 +632,7 @@ public struct Field: CapnProto.Struct {
   public struct Group: CapnProto.Struct {
     public static let id: UInt64 = 0xcafccddb68db1d11
     public static let size: CapnProto.StructSize = .init(safeDataBytes: 24, pointers: 4)
-    public static let firstFieldSize: CapnProto.ListElementSize? = .eightBytes
+    public static let firstFieldSize: CapnProto.ListElementSize? = nil
 
     public var struct$: CapnProto.StructPointer
 
@@ -777,8 +777,8 @@ public struct Field: CapnProto.Struct {
   public func initSlot() -> Slot {
     _ = struct$.write(UInt16(0), atByte: 8)
     _ = struct$.write(UInt32(0), atByte: 4)
-    _ = struct$.write(UInt64(0), atByte: 16)
-    _ = struct$.write(UInt64(0), atByte: 24)
+    _ = struct$.clearPointer(at: 2)
+    _ = struct$.clearPointer(at: 3)
     _ = struct$.write(false, atBit: 128)
     return .init(struct$)
   }
@@ -944,7 +944,7 @@ public struct `Type`: CapnProto.Struct {
   public struct List: CapnProto.Struct {
     public static let id: UInt64 = 0x87e739250a60ea97
     public static let size: CapnProto.StructSize = .init(safeDataBytes: 24, pointers: 1)
-    public static let firstFieldSize: CapnProto.ListElementSize? = .pointer
+    public static let firstFieldSize: CapnProto.ListElementSize? = nil
 
     public var struct$: CapnProto.StructPointer
 
@@ -963,7 +963,7 @@ public struct `Type`: CapnProto.Struct {
   public struct Enum: CapnProto.Struct {
     public static let id: UInt64 = 0x9e0e78711a7f87a9
     public static let size: CapnProto.StructSize = .init(safeDataBytes: 24, pointers: 1)
-    public static let firstFieldSize: CapnProto.ListElementSize? = .eightBytes
+    public static let firstFieldSize: CapnProto.ListElementSize? = nil
 
     public var struct$: CapnProto.StructPointer
 
@@ -987,7 +987,7 @@ public struct `Type`: CapnProto.Struct {
   public struct Struct: CapnProto.Struct {
     public static let id: UInt64 = 0xac3a6f60ef4cc6d3
     public static let size: CapnProto.StructSize = .init(safeDataBytes: 24, pointers: 1)
-    public static let firstFieldSize: CapnProto.ListElementSize? = .eightBytes
+    public static let firstFieldSize: CapnProto.ListElementSize? = nil
 
     public var struct$: CapnProto.StructPointer
 
@@ -1011,7 +1011,7 @@ public struct `Type`: CapnProto.Struct {
   public struct Interface: CapnProto.Struct {
     public static let id: UInt64 = 0xed8bca69f7fb0cbf
     public static let size: CapnProto.StructSize = .init(safeDataBytes: 24, pointers: 1)
-    public static let firstFieldSize: CapnProto.ListElementSize? = .eightBytes
+    public static let firstFieldSize: CapnProto.ListElementSize? = nil
 
     public var struct$: CapnProto.StructPointer
 
@@ -1071,7 +1071,7 @@ public struct `Type`: CapnProto.Struct {
       public func which() -> Which? {
         switch whichDiscriminant.rawValue {
         case 0: .anyKind
-        case 1: .struct
+        case 1: .`struct`
         case 2: .list
         case 3: .capability
         default: nil
@@ -1127,7 +1127,7 @@ public struct `Type`: CapnProto.Struct {
     public struct Parameter: CapnProto.Struct {
       public static let id: UInt64 = 0x9dd1f724f4614a85
       public static let size: CapnProto.StructSize = .init(safeDataBytes: 24, pointers: 1)
-      public static let firstFieldSize: CapnProto.ListElementSize? = .eightBytes
+      public static let firstFieldSize: CapnProto.ListElementSize? = nil
 
       public var struct$: CapnProto.StructPointer
 
@@ -1151,7 +1151,7 @@ public struct `Type`: CapnProto.Struct {
     public struct ImplicitMethodParameter: CapnProto.Struct {
       public static let id: UInt64 = 0xbaefc9120c56e274
       public static let size: CapnProto.StructSize = .init(safeDataBytes: 24, pointers: 1)
-      public static let firstFieldSize: CapnProto.ListElementSize? = .twoBytes
+      public static let firstFieldSize: CapnProto.ListElementSize? = nil
 
       public var struct$: CapnProto.StructPointer
 
@@ -1306,8 +1306,8 @@ public struct `Type`: CapnProto.Struct {
     case 12: .text
     case 13: .data
     case 14: .list(.init(struct$))
-    case 15: .enum(.init(struct$))
-    case 16: .struct(.init(struct$))
+    case 15: .`enum`(.init(struct$))
+    case 16: .`struct`(.init(struct$))
     case 17: .interface(.init(struct$))
     case 18: .anyPointer(.init(struct$))
     default: nil
@@ -1445,7 +1445,7 @@ public struct `Type`: CapnProto.Struct {
 
   public func initList() -> List {
     _ = struct$.write(UInt16(14), atByte: 0)
-    _ = struct$.write(UInt64(0), atByte: 0)
+    _ = struct$.clearPointer(at: 0)
     return .init(struct$)
   }
 
@@ -1455,7 +1455,7 @@ public struct `Type`: CapnProto.Struct {
   public func initEnum() -> Enum {
     _ = struct$.write(UInt16(15), atByte: 0)
     _ = struct$.write(UInt64(0), atByte: 8)
-    _ = struct$.write(UInt64(0), atByte: 0)
+    _ = struct$.clearPointer(at: 0)
     return .init(struct$)
   }
 
@@ -1465,7 +1465,7 @@ public struct `Type`: CapnProto.Struct {
   public func initStruct() -> Struct {
     _ = struct$.write(UInt16(16), atByte: 0)
     _ = struct$.write(UInt64(0), atByte: 8)
-    _ = struct$.write(UInt64(0), atByte: 0)
+    _ = struct$.clearPointer(at: 0)
     return .init(struct$)
   }
 
@@ -1475,7 +1475,7 @@ public struct `Type`: CapnProto.Struct {
   public func initInterface() -> Interface {
     _ = struct$.write(UInt16(17), atByte: 0)
     _ = struct$.write(UInt64(0), atByte: 8)
-    _ = struct$.write(UInt64(0), atByte: 0)
+    _ = struct$.clearPointer(at: 0)
     return .init(struct$)
   }
 
@@ -1722,8 +1722,8 @@ public struct Value: CapnProto.Struct {
     case 12: .text(try struct$.readText(at: 0) ?? .init())
     case 13: .data(try struct$.readList(at: 0) ?? .init())
     case 14: .list(struct$.readAnyPointer(at: 0))
-    case 15: .enum(struct$.read(atByte: 2))
-    case 16: .struct(struct$.readAnyPointer(at: 0))
+    case 15: .`enum`(struct$.read(atByte: 2))
+    case 16: .`struct`(struct$.readAnyPointer(at: 0))
     case 17: .interface
     case 18: .anyPointer(struct$.readAnyPointer(at: 0))
     default: nil
@@ -2051,7 +2051,7 @@ public struct CodeGeneratorRequest: CapnProto.Struct {
         public struct Member: CapnProto.Struct {
           public static let id: UInt64 = 0xfc69d5e1d630a151
           public static let size: CapnProto.StructSize = .init(safeDataBytes: 24, pointers: 0)
-          public static let firstFieldSize: CapnProto.ListElementSize? = .eightBytes
+          public static let firstFieldSize: CapnProto.ListElementSize? = nil
 
           public var struct$: CapnProto.StructPointer
 

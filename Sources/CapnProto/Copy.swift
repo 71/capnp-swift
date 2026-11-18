@@ -21,7 +21,11 @@ extension AnyPointer {
       writeCapability(capabilityIndex: capability.capabilityIndex)
 
     case .list(let list):
-      try initList(count: list.rawCount, elementSize: list.elementSize).copy(from: list)
+      // Lists read from a message always have an encodable size.
+      guard let target = initList(count: list.rawCount, elementSize: list.elementSize) else {
+        throw .sizeOverflow
+      }
+      try target.copy(from: list)
 
     case .struct(let struct_):
       try initStruct(size: struct_.size).copy(from: struct_)
@@ -31,12 +35,14 @@ extension AnyPointer {
   /// Computes the size of the pointer (and the data it points to) in words, assuming a single
   /// segment (no far pointers).
   fileprivate func computeWordSize() throws(PointerError) -> UInt32 {
-    switch try resolve() {
-    case nil: 1  // Null pointer is encoded as a 0 word.
-    case .capability: 1
-    case .list(let list): try list.computeWordSize()
-    case .struct(let struct_): try struct_.computeWordSize()
-    }
+    let contentWords: UInt32 =
+      switch try resolve() {
+      case nil, .capability: 0
+      case .list(let list): try list.computeContentWordSize()
+      case .struct(let struct_): try struct_.computeContentWordSize()
+      }
+
+    return try contentWords.add(1, orThrow: PointerError.sizeOverflow)  // The pointer itself.
   }
 }
 
@@ -52,7 +58,19 @@ extension ListPointer {
   /// Performs a copy of the list and the data it points to, returning a new `ListPointer` that
   /// points to the root of a new `Message`.
   public func copy() throws(PointerError) -> ListPointer {
-    try AnyPointer(unsafePointer: data).copy().resolve()!.expectList()
+    // +1 for the root pointer.
+    let messageWords = try computeContentWordSize().add(1, orThrow: PointerError.sizeOverflow)
+    let message = Message(withInitialWordCapacity: messageWords)
+    guard let copy = message.rootPointer.initList(count: rawCount, elementSize: elementSize) else {
+      throw .sizeOverflow
+    }
+
+    try copy.copy(from: self)
+
+    assert(message.segmentCount == 1)
+    assert(message.firstSegment.data.words == messageWords)
+
+    return copy
   }
 
   package func copy(from list: ListPointer) throws(PointerError) {
@@ -79,10 +97,10 @@ extension ListPointer {
       }
 
     case .composite(let size):
-      for i in 0..<list.rawCount {
-        let sourcePointer = try list.data.advanced(byWords: i * size.dataWords)
+      for i in 0..<list.count {
+        let sourcePointer = list.data.advanced(byBytes: i * size.sizeInBytes)
         let source = StructPointer(data: sourcePointer, size: size)
-        let target = initStruct(at: Int(i))!
+        let target = initStruct(at: i)!
 
         try target.copy(from: source)
       }
@@ -92,41 +110,50 @@ extension ListPointer {
   private func copy(from list: ListPointer, bitsPerElement: UInt32) {
     data.assertMutablePointer.copyMemory(
       from: list.data.pointer,
-      byteCount: Int(list.rawCount * bitsPerElement).divideRoundingUp(by: 8)
+      // Widen to `Int` first, as the product may not fit in `UInt32`.
+      byteCount: (Int(list.rawCount) * Int(bitsPerElement)).divideRoundingUp(by: 8)
     )
   }
 
-  fileprivate func computeWordSize() throws(PointerError) -> UInt32 {
-    // Add 1 for the pointer word.
-    var dataWords: UInt32 = 0
-
+  /// Computes the size of the list's content (excluding the pointer to it) in words, assuming a
+  /// single segment (no far pointers).
+  fileprivate func computeContentWordSize() throws(PointerError) -> UInt32 {
     switch elementSize {
-    case .zero: dataWords = 0
-    case .oneBit: dataWords = rawCount.divideRoundingUp(by: 64)
-    case .oneByte: dataWords = rawCount.divideRoundingUp(by: 8)
-    case .twoBytes: dataWords = rawCount.divideRoundingUp(by: 4)
-    case .fourBytes: dataWords = rawCount.divideRoundingUp(by: 2)
-    case .eightBytes: dataWords = rawCount
+    case .zero: return 0
+    case .oneBit: return rawCount.divideRoundingUp(by: 64)
+    case .oneByte: return rawCount.divideRoundingUp(by: 8)
+    case .twoBytes: return rawCount.divideRoundingUp(by: 4)
+    case .fourBytes: return rawCount.divideRoundingUp(by: 2)
+    case .eightBytes: return rawCount
 
     case .pointer:
-      for i in 0..<Int(rawCount) {
-        dataWords += try pointer(at: i).computeWordSize()
+      var words: UInt32 = 0
+
+      for i in 0..<count {
+        // Each element's size includes its pointer, i.e. its slot in the list.
+        words = try words.add(pointer(at: i).computeWordSize(), orThrow: PointerError.sizeOverflow)
       }
 
-    case .composite(let size):
-      dataWords = 1  // Tag word.
+      return words
 
-      for i in 0..<Int(rawCount) {
+    case .composite(let size):
+      var words: UInt32 = 1  // Tag word.
+
+      for i in 0..<count {
         let struct_ = StructPointer(
           data: data.advanced(byBytes: i * size.sizeInBytes),
           size: size
         )
 
-        dataWords += try struct_.computeWordSize()
+        // Structs are stored inline, so there is no pointer to count.
+        words = try words.add(
+          struct_.computeContentWordSize(),
+          orThrow: PointerError.sizeOverflow
+        )
       }
-    }
 
-    return 1 + dataWords  // Add 1 for the pointer word.
+      return words
+    }
   }
 }
 
@@ -142,7 +169,17 @@ extension StructPointer {
   /// Performs a copy of the struct and the data it points to, returning a new `StructPointer`
   /// that points to the root of a new `Message`.
   public func copy() throws(PointerError) -> StructPointer {
-    try AnyPointer(unsafePointer: data).copy().resolve()!.expectStruct()
+    // +1 for the root pointer.
+    let messageWords = try computeContentWordSize().add(1, orThrow: PointerError.sizeOverflow)
+    let message = Message(withInitialWordCapacity: messageWords)
+    let copy = message.rootPointer.initStruct(size: size)
+
+    try copy.copy(from: self)
+
+    assert(message.segmentCount == 1)
+    assert(message.firstSegment.data.words == messageWords)
+
+    return copy
   }
 
   package func copy(from struct_: StructPointer) throws(PointerError) {
@@ -161,11 +198,16 @@ extension StructPointer {
     }
   }
 
-  fileprivate func computeWordSize() throws(PointerError) -> UInt32 {
-    var words = 1 + size.dataWords
+  /// Computes the size of the struct's content (excluding the pointer to it) in words, assuming a
+  /// single segment (no far pointers).
+  fileprivate func computeContentWordSize() throws(PointerError) -> UInt32 {
+    var words = size.dataWords
 
     for i in 0..<size.pointers {
-      words += try readAnyPointer(at: i)?.computeWordSize() ?? 1
+      // Each pointer's size includes the pointer itself, i.e. its slot in the pointer section.
+      let pointerWords = try readAnyPointer(at: i)?.computeWordSize() ?? 1
+
+      words = try words.add(pointerWords, orThrow: PointerError.sizeOverflow)
     }
 
     return words

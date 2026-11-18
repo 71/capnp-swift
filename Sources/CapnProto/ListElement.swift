@@ -50,26 +50,28 @@ public struct VoidValue: PrimitiveListElement, NonBitListElement, Sendable {
 extension Bool: PrimitiveListElement {
   public static var elementSize: ListElementSize { .oneBit }
 
-  public static func read(in list: ListPointer, uncheckedAt index: Int) -> Bool {
-    let (wordOffset, bitOffset) = index.quotientAndRemainder(dividingBy: Word.bitWidth)
-    let word = list.data.pointer.load(
-      fromByteOffset: wordOffset * MemoryLayout<Word>.size,
-      as: Word.self
-    )
+  // Bits are numbered from the least significant bit of each byte, so operating on bytes rather
+  // than words is independent of the host's byte order.
 
-    return (word & (1 << bitOffset)) != 0
+  public static func read(in list: ListPointer, uncheckedAt index: Int) -> Bool {
+    let (byteOffset, bitOffset) = index.quotientAndRemainder(dividingBy: 8)
+    let byte = list.data.pointer.load(fromByteOffset: byteOffset, as: UInt8.self)
+
+    return (byte & (1 << bitOffset)) != 0
   }
 
   public static func write(in list: ListPointer, uncheckedAt index: Int, value: Bool) {
-    let (wordOffset, bitOffset) = index.quotientAndRemainder(dividingBy: Word.bitWidth)
-    let wordAddress = list.data.assertMutablePointer.bindMemory(to: Word.self, capacity: 1)
-      .advanced(by: wordOffset)
+    let (byteOffset, bitOffset) = index.quotientAndRemainder(dividingBy: 8)
+    let pointer = list.data.assertMutablePointer
+    var byte = pointer.load(fromByteOffset: byteOffset, as: UInt8.self)
 
     if value {
-      wordAddress.pointee |= (1 << bitOffset)
+      byte |= (1 << bitOffset)
     } else {
-      wordAddress.pointee &= ~(1 << bitOffset)
+      byte &= ~(1 << bitOffset)
     }
+
+    pointer.storeBytes(of: byte, toByteOffset: byteOffset, as: UInt8.self)
   }
 }
 
@@ -197,14 +199,14 @@ extension Float32: PrimitiveListElement, NonBitListElement {
   public static var elementSize: ListElementSize { .fourBytes }
 
   public static func read(in list: ListPointer, uncheckedAt index: Int) -> Float32 {
-    list.data.pointer.load(fromByteOffset: index * 4, as: Float32.self)
+    .init(bitPattern: list.data.pointer.loadLe(fromByteOffset: index * 4, as: UInt32.self))
   }
 
   public static func write(in list: ListPointer, uncheckedAt index: Int, value: Float32) {
     list.data.assertMutablePointer.storeBytes(
-      of: value,
+      of: value.bitPattern.littleEndian,
       toByteOffset: index * 4,
-      as: Float32.self
+      as: UInt32.self
     )
   }
 }
@@ -213,14 +215,14 @@ extension Float64: PrimitiveListElement, NonBitListElement {
   public static var elementSize: ListElementSize { .eightBytes }
 
   public static func read(in list: ListPointer, uncheckedAt index: Int) -> Float64 {
-    list.data.pointer.load(fromByteOffset: index * 8, as: Float64.self)
+    .init(bitPattern: list.data.pointer.loadLe(fromByteOffset: index * 8, as: UInt64.self))
   }
 
   public static func write(in list: ListPointer, uncheckedAt index: Int, value: Float64) {
     list.data.assertMutablePointer.storeBytes(
-      of: value,
+      of: value.bitPattern.littleEndian,
       toByteOffset: index * 8,
-      as: Float64.self
+      as: UInt64.self
     )
   }
 }
@@ -281,11 +283,15 @@ extension List: PointerListElement {
 
   public static func read(in list: ListPointer, uncheckedAt index: Int) throws(PointerError) -> List
   {
-    if let list$ = try AnyPointer.read(in: list, uncheckedAt: index).resolve()?.expectList() {
-      .init(unchecked: list$)
-    } else {
-      .init()
+    guard let list$ = try AnyPointer.read(in: list, uncheckedAt: index).resolve()?.expectList()
+    else {
+      return .init()
     }
+    // The element size comes from the wire, so it must be validated.
+    guard let typedList = List(verifying: list$) else {
+      throw .unexpectedPointerType
+    }
+    return typedList
   }
 }
 
