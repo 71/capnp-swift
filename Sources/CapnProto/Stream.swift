@@ -154,7 +154,6 @@ extension Message {
   }
 
   /// Returns a new `Message` parsed from a stream of byte chunks.
-  @available(macOS 15, iOS 18, *)
   public static func fromStream(_ chunks: some AsyncSequence<ArraySlice<UInt8>, any Error>)
     -> some AsyncSequence<
       Message, any Error
@@ -243,7 +242,6 @@ extension Message {
 
 /// An `AsyncSequence` which transforms an `AsyncSequence` of byte chunks into a sequence of
 /// `Message`s.
-@available(macOS 15, iOS 18, *)
 private struct AsyncDecoderSequence<From: AsyncSequence>: AsyncSequence
 where From.Element == ArraySlice<UInt8> {
   typealias Element = Message

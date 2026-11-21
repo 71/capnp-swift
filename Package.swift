@@ -4,7 +4,7 @@ import PackageDescription
 
 let package = Package(
   name: "capnp-swift",
-  platforms: [.macOS(.v15)],
+  platforms: [.macOS(.v15), .iOS(.v18), .tvOS(.v18), .watchOS(.v11), .visionOS(.v2)],
   products: [
     .library(name: "CapnProto", targets: ["CapnProto", "CapnProtoSchema"]),
     .plugin(name: "CapnProtoCommand", targets: ["CapnProtoCommand"]),
